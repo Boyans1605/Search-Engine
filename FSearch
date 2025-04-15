@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Family Location Tracker</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        #map {
+            height: 400px;
+            width: 100%;
+            margin: 20px 0;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 15px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        #shareLink {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        #status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            background: #f0f0f0;
+        }
+        .info-box {
+            background: #e7f3fe;
+            border-left: 4px solid #4CAF50;
+            padding: 10px;
+            margin: 20px 0;
+        }
+        .accuracy-circle {
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Family Location Tracker</h1>
+    <p>Share your real-time location with family members via a secure link.</p>
+    
+    <div class="controls">
+        <button id="startBtn">Start Sharing</button>
+        <button id="stopBtn" disabled>Stop Sharing</button>
+        <button id="copyBtn" disabled>Copy Link</button>
+    </div>
+    
+    <div id="status">🔴 Ready to start sharing your location</div>
+    
+    <div id="shareSection" style="display: none;">
+        <h3>🔗 Share This Link With Family:</h3>
+        <input type="text" id="shareLink" readonly>
+        <div class="info-box">
+            <p>✔️ This link will show your <strong>live location</strong>.</p>
+            <p>⚠️ Only share with trusted family members.</p>
+        </div>
+    </div>
+    
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([0, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+
+        // DOM elements
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const statusElement = document.getElementById('status');
+        const shareSection = document.getElementById('shareSection');
+        const shareLink = document.getElementById('shareLink');
+
+        // Tracking variables
+        let watchId = null;
+        let marker = null;
+        let accuracyCircle = null;
+        let shareId = null;
+        let lastPosition = null;
+        let shareInterval = null;
+
+        // Check if this is a shared link view
+        const urlParams = new URLSearchParams(window.location.search);
+        const viewId = urlParams.get('view');
+        
+        if (viewId) {
+            // This is a shared link (family member viewing)
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'none';
+            copyBtn.style.display = 'none';
+            document.querySelector('h1').textContent = 'Family Member Location';
+            document.querySelector('p').textContent = 'Viewing a shared live location';
+            
+            // Start checking for updates
+            pollSharedLocation(viewId);
+        }
+
+        // Event listeners
+        startBtn.addEventListener('click', startSharing);
+        stopBtn.addEventListener('click', stopSharing);
+        copyBtn.addEventListener('click', copyToClipboard);
+
+        // Start sharing location
+        function startSharing() {
+            if (navigator.geolocation) {
+                statusElement.textContent = "🟡 Getting your location...";
+                statusElement.style.background = "#fff3cd";
+                
+                // Generate a unique share ID
+                shareId = "family-" + Math.random().toString(36).substring(2, 10);
+                
+                // Start watching position
+                watchId = navigator.geolocation.watchPosition(
+                    position => {
+                        lastPosition = position;
+                        updateLocation(position);
+                        updateShareLink();
+                    },
+                    error => {
+                        showError(error);
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        maximumAge: 0,
+                        timeout: 5000
+                    }
+                );
+                
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                copyBtn.disabled = false;
+                shareSection.style.display = 'block';
+                
+                // Store in localStorage (simulates server storage)
+                storeLocation();
+                
+                // Update storage every 10 seconds while sharing
+                shareInterval = setInterval(storeLocation, 10000);
+                
+                statusElement.textContent = "🟢 Sharing your live location";
+                statusElement.style.background = "#d4edda";
+            } else {
+                statusElement.textContent = "❌ Geolocation not supported by your browser";
+                statusElement.style.background = "#f8d7da";
+            }
+        }
+
+        // Stop sharing location
+        function stopSharing() {
+            if (watchId) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+            
+            if (shareInterval) {
+                clearInterval(shareInterval);
+                shareInterval = null;
+            }
+            
+            // Clear from storage
+            if (shareId) {
+                localStorage.removeItem(`family-loc-${shareId}`);
+                shareId = null;
+            }
+            
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            copyBtn.disabled = true;
+            
+            statusElement.textContent = "🔴 Location sharing stopped";
+            statusElement.style.background = "#f8d7da";
+        }
+
+        // Update map with new location
+        function updateLocation(position) {
+            const { latitude, longitude, accuracy } = position.coords;
+            
+            // Remove previous marker and circle
+            if (marker) map.removeLayer(marker);
+            if (accuracyCircle) map.removeLayer(accuracyCircle);
+            
+            // Add new marker
+            marker = L.marker([latitude, longitude]).addTo(map)
+                .bindPopup(`📍 Your location (accuracy: ~${accuracy ? accuracy.toFixed(0) + 'm' : 'unknown'})`)
+                .openPopup();
+            
+            // Add accuracy circle if available
+            if (accuracy) {
+                accuracyCircle = L.circle([latitude, longitude], {
+                    radius: accuracy,
+                    className: 'accuracy-circle',
+                    fillColor: '#4CAF50',
+                    color: '#4CAF50',
+                    fillOpacity: 0.2
+                }).addTo(map);
+            }
+            
+            // Center map on location
+            map.setView([latitude, longitude], 15);
+        }
+
+        // Generate and update the shareable link
+        function updateShareLink() {
+            if (!shareId) return;
+            
+            const currentUrl = window.location.href.split('?')[0];
+            const shareUrl = `${currentUrl}?view=${shareId}`;
+            shareLink.value = shareUrl;
+        }
+
+        // Store location in localStorage
+        function storeLocation() {
+            if (shareId && lastPosition) {
+                const data = {
+                    lat: lastPosition.coords.latitude,
+                    lng: lastPosition.coords.longitude,
+                    accuracy: lastPosition.coords.accuracy,
+                    timestamp: new Date().getTime()
+                };
+                localStorage.setItem(`family-loc-${shareId}`, JSON.stringify(data));
+            }
+        }
+
+        // Poll for shared location updates (for family members viewing)
+        function pollSharedLocation(viewId) {
+            function checkLocation() {
+                const sharedData = localStorage.getItem(`family-loc-${viewId}`);
+                
+                if (sharedData) {
+                    try {
+                        const data = JSON.parse(sharedData);
+                        
+                        // Check if data is fresh (within 1 minute)
+                        const currentTime = new Date().getTime();
+                        if (currentTime - data.timestamp < 60000) {
+                            // Update map
+                            if (marker) map.removeLayer(marker);
+                            if (accuracyCircle) map.removeLayer(accuracyCircle);
+                            
+                            marker = L.marker([data.lat, data.lng]).addTo(map)
+                                .bindPopup(`📍 Family member (updated ${Math.floor((currentTime - data.timestamp)/1000)} seconds ago)`)
+                                .openPopup();
+                            
+                            if (data.accuracy) {
+                                accuracyCircle = L.circle([data.lat, data.lng], {
+                                    radius: data.accuracy,
+                                    className: 'accuracy-circle',
+                                    fillColor: '#4CAF50',
+                                    color: '#4CAF50',
+                                    fillOpacity: 0.2
+                                }).addTo(map);
+                            }
+                            
+                            map.setView([data.lat, data.lng], 15);
+                            statusElement.textContent = `🟢 Live location - updated ${Math.floor((currentTime - data.timestamp)/1000)} seconds ago`;
+                            statusElement.style.background = "#d4edda";
+                        } else {
+                            statusElement.textContent = "🔴 Shared location expired (no updates in last minute)";
+                            statusElement.style.background = "#f8d7da";
+                        }
+                    } catch (e) {
+                        console.error("Error parsing shared data:", e);
+                    }
+                } else {
+                    statusElement.textContent = "🔴 Shared location not found or expired";
+                    statusElement.style.background = "#f8d7da";
+                }
+            }
+            
+            // Check immediately and then every 5 seconds
+            checkLocation();
+            setInterval(checkLocation, 5000);
+        }
+
+        // Copy link to clipboard
+        function copyToClipboard() {
+            shareLink.select();
+            document.execCommand('copy');
+            
+            statusElement.textContent = "✅ Link copied to clipboard!";
+            statusElement.style.background = "#d4edda";
+        }
+
+        // Show error message
+        function showError(error) {
+            let message = "❌ Error: ";
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    message += "Location access denied. Please enable permissions.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message += "Location unavailable.";
+                    break;
+                case error.TIMEOUT:
+                    message += "Location request timed out.";
+                    break;
+                case error.UNKNOWN_ERROR:
+                    message += "Unknown error occurred.";
+                    break;
+            }
+            statusElement.textContent = message;
+            statusElement.style.background = "#f8d7da";
+        }
+    </script>
+</body>
+</html>
